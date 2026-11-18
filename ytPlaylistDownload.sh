@@ -1,32 +1,45 @@
 #! /bin/bash
 function progress(){
 	printf "\r"
-	printf "$1 out of $2 songs processed."
+	printf "$1 out of $2 songs processed for playlist: $3."
 }
+
+function downloadSong {
+	urlUnformatted="$1"
+	outloc="$2"
+	if [[ "$urlUnformatted" == *"youtube.com"* ]]; then 
+		url="$urlUnformatted" 
+	else
+		url="https://music.youtube.com/watch?v=$urlUnformatted" 
+	fi
+
+	#echo "EXEC: yt-dlp for url: $url into location $outloc for unformat $urlUnformatted"
+	yt-dlp --extract-audio -f "bestaudio[ext=m4a]","bestaudio[ext=webm]" --audio-format mp3 --write-description --embed-thumbnail --embed-metadata "$url" -o "$outloc"
+}
+
 
 function playlistDownload {
 	# raw playlist
-	tmpList=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)
+	tmpList="ytdl.tmp.rawplaylist.$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)"
 
 	# Sorted complete without ID
-	tmpList2=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)
+	tmpList2="ytdl.tmp.sortedWithoutId.$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)"
 
 	# List of songs already downloaded (formatted already)
-	tmpList3=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)
+	tmpList3="ytdl.tmp.songsDownloaded.$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)"
 
 	# Songs to download
-	tmpList4=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)
+	tmpList4="ytdl.tmp.songsToDownload.$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)"
 
 	# Only IDs of the todownload
-	tmpList5=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)
+	tmpList5="ytdl.tmp.IDtoDownload.$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13; echo)"
 
 	name="$1"
         url="$3"
         outDir="$2"
         echo "Downloading: $name into $outDir with URL $url"
 
-	mkdir $name 2> /dev/null
-        mkdir $outDir 2> /dev/null
+        mkdir "$outDir/$name" 2> /dev/null
 
 	yt-dlp --print "%(id)s %(title)s" --flat-playlist "$url" > "$tmpList"
 
@@ -39,7 +52,6 @@ function playlistDownload {
 	grep -v -F -x -f "$tmpList3" "$tmpList2" > "$tmpList4"
 
 	# make list of yt IDs
-	#cat "$tmpList4"|while read x; do grep " ${x}" "$tmpList" ; done
 	cat "$tmpList4"|while read x; do grep -a -F -- "${x}" "$tmpList" ; done | awk '{print $1}' > "$tmpList5"
 
 	total=$(wc -l "$tmpList5")
@@ -47,35 +59,32 @@ function playlistDownload {
 
 	n=1
 	cat "$tmpList5" | while read x; do
-		progress $n $total
+		progress $n $total $name
 		((n++))
-
-		yt-dlp --extract-audio -f "bestaudio[ext=m4a]","bestaudio[ext=webm]" --audio-format mp3 --write-description --embed-metadata "https://music.youtube.com/watch?v=$x" -o "$outDir/$name/%(title)s.%(ext)s"
-
+		downloadSong "https://music.youtube.com/watch?v=${x}" "${outDir}/${name}/%(title)s.%(ext)s"
+		
 	done
 
-	rm "$tmpList"
-	rm "$tmpList2"
-	rm "$tmpList3"
-	rm "$tmpList4"
-	rm "$tmpList5"
+	rm "ytdl.tmp.*"
 }
-function install {
-        # setup storage permission
-        termux-setup-storage
-        
 
-        # install pip for yt-dlp and ffmpeg for music
-        yes | pkg update
-        yes | pkg upgrade
-        yes | pkg install python-pip ffmpeg
-        yes | pip3 install yt-dlp --upgrade
+# url outloc
+
+function pidWait {
+	while kill -0 "$1" 2>/dev/null; do
+		sleep 1
+	done
+}
+
+function install {
+	pkg upgrade
+	pkg install python-pip ffmpeg
+	pip3 install yt-dlp --upgrade
 }
 
 output="/storage/emulated/0/Music"
 
 function download {
-
         echo "downloading..."
         # You need to edit this part. the automatic output is the music folder.
         # The only things necessary to configure are the name of the playlists and the playlist URL.
@@ -90,20 +99,52 @@ function download {
         # playlistDownload ""   "$output"       ""
         # playlistDownload ""   "$output"       ""
         # playlistDownload ""   "$output"       ""
+	
+	chown -R media_rw:media_rw ${output} &
+	chmod 644 -R ${output}
 
 }
 
-echo "1. download all music"
-echo "2. update yt-dlp"
+echo "1/a. download all music"
+echo "2/b. download one song"
+echo "3/c. lock the directory and fork to download multiple songs quicker"
+echo "4/d. update yt-dlp"
 
 if [ -z $1 ]; then
-        read opt
+	read opt
 else
-        opt=$1
+	opt=$1
 fi
 
+[ $opt = 'a' ] && opt=1
+[ $opt = 'b' ] && opt=2
+[ $opt = 'c' ] && opt=3
+[ $opt = 'd' ] && opt=4
+
 if [ $opt -eq 1 ]; then
-        download
+	download
+
 elif [ $opt -eq 2 ]; then
-        install
+	echo "url?"
+	read url
+	echo "directory?"
+	read dir
+
+	downloadSong "${url}" "${output}/${dir}/%(title)s.%(ext)s"
+elif [ $opt -eq 3 ]; then
+	echo 'directory?'
+	read dir
+	until [ "$url" == "e" ]; do
+		echo "url?"
+		read url
+		if [ "$url" = "e" ]; then
+			break
+		fi
+		echo "${url} to ${output}/${dir}"
+		downloadSong "${url}" "${output}/${dir}/%(title)s.%(ext)s" &
+	done
+elif [ $opt -eq 4 ]; then
+	install
+else
+	download
 fi
